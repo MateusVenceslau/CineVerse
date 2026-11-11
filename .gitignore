@@ -1,0 +1,25 @@
+﻿# Credenciais e variáveis de ambiente
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# Dependências
+node_modules/
+**/node_modules/
+
+# Expo
+.expo/
+**/.expo/
+
+# Arquivos temporários
+*.log
+.DS_Store
+Thumbs.db
+
+# Backups e dumps do banco de dados
+*.sql
+*.dump
+*.bak
