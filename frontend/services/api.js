@@ -1,5 +1,4 @@
-
-const API_URL = "http://192.168.18.5:3333";
+const API_URL = process.env.EXPO_PUBLIC_API_URL || "";
 
 export const configurarApi = () => {
   if (!API_URL) {
