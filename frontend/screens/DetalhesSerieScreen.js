@@ -1,5 +1,5 @@
-
 import React, { useEffect, useState } from "react";
+import Constants from "expo-constants";
 
 import {
   View,
@@ -12,9 +12,14 @@ import {
   ActivityIndicator,
   Linking,
   useWindowDimensions,
+  TextInput,
+  Alert,
+  Platform,
 } from "react-native";
 
 import YoutubePlayer from "react-native-youtube-iframe";
+
+import { useAuth } from "../context/AuthContext";
 
 import {
   buscarSeriePorId,
@@ -22,7 +27,148 @@ import {
   buscarTemporadaTMDB,
   buscarTrailerSerieTMDB,
   buscarTrailerTemporadaTMDB,
+  sincronizarSerieTMDB,
 } from "../services/seriesService";
+
+import {
+  buscarAvaliacoesFilme,
+  cadastrarAvaliacao,
+  editarAvaliacao,
+  excluirAvaliacao,
+} from "../services/filmesService";
+
+// ======================================
+// GOOGLE CAST
+// ======================================
+
+const estaNoExpoGo = Constants.executionEnvironment === "storeClient";
+
+const GoogleCast =
+  Platform.OS === "web" || estaNoExpoGo
+    ? null
+    : require("react-native-google-cast");
+
+function ControlesCast() {
+  if (!GoogleCast) return null;
+
+  return <ControlesCastAtivo />;
+}
+
+function ControlesCastAtivo() {
+  const { CastButton, useRemoteMediaClient } = GoogleCast;
+  const client = useRemoteMediaClient();
+
+  const [carregandoCast, setCarregandoCast] = useState(false);
+
+  useEffect(() => {
+    if (!client) return undefined;
+
+    console.log("CAST - Cliente conectado!");
+
+    const listenerStatus = client.onMediaStatusUpdated((status) => {
+      console.log("CAST - Status da mídia:", status);
+    });
+
+    const listenerInicio = client.onMediaPlaybackStarted(() => {
+      console.log("CAST - Reprodução iniciada!");
+    });
+
+    const listenerFim = client.onMediaPlaybackEnded(() => {
+      console.log("CAST - Reprodução finalizada!");
+    });
+
+    return () => {
+      listenerStatus?.remove?.();
+      listenerInicio?.remove?.();
+      listenerFim?.remove?.();
+    };
+  }, [client]);
+
+  const transmitirVideoTeste = async () => {
+    if (!client) {
+      Alert.alert(
+        "TV não conectada",
+        "Conecte-se à televisão primeiro."
+      );
+      return;
+    }
+
+    if (carregandoCast) return;
+
+    try {
+      setCarregandoCast(true);
+
+      await client.loadMedia({
+        autoplay: true,
+        mediaInfo: {
+          contentUrl:
+            "https://commondatastorage.googleapis.com/gtv-videos-bucket/CastVideos/mp4/BigBuckBunny.mp4",
+          contentType: "video/mp4",
+          streamType: "buffered",
+          metadata: {
+            title: "Vídeo de teste CineVerse",
+            subtitle: "Teste de transmissão",
+            type: "movie",
+          },
+        },
+      });
+
+      await client.requestStatus();
+
+      const status = await client.getMediaStatus();
+      console.log("CAST - Mídia carregada:", status);
+
+      Alert.alert(
+        "Solicitação enviada",
+        "Verifique se o vídeo começou a reproduzir na televisão."
+      );
+    } catch (error) {
+      console.error("Erro ao transmitir vídeo:", error);
+
+      Alert.alert(
+        "Erro na transmissão",
+        error.message || "Não foi possível transmitir o vídeo."
+      );
+    } finally {
+      setCarregandoCast(false);
+    }
+  };
+
+  return (
+    <View style={styles.areaCast}>
+      <View style={styles.textosCast}>
+        <Text style={styles.textoCast}>Transmitir para TV</Text>
+
+        <Text style={styles.subtextoCast}>
+          Conecte e envie um vídeo de teste
+        </Text>
+
+        {client ? (
+          <TouchableOpacity
+            style={styles.botaoTesteCast}
+            onPress={transmitirVideoTeste}
+            disabled={carregandoCast}
+            activeOpacity={0.8}
+          >
+            {carregandoCast ? (
+              <ActivityIndicator color="#FFFFFF" />
+            ) : (
+              <Text style={styles.textoTesteCast}>
+                Testar vídeo na TV
+              </Text>
+            )}
+          </TouchableOpacity>
+        ) : (
+          <Text style={styles.subtextoCast}>
+            Aguardando conexão com a TV...
+          </Text>
+        )}
+      </View>
+
+      <CastButton style={styles.botaoCast} />
+    </View>
+  );
+}
 
 const obterVideoId = (trailer) => {
   if (!trailer) return null;
@@ -42,6 +188,7 @@ const obterVideoId = (trailer) => {
 
 export default function DetalhesSerieScreen({ navigation, route }) {
   const { width: larguraTela } = useWindowDimensions();
+  const { usuario, token } = useAuth();
 
   const larguraCapa = Math.min(larguraTela * 0.62, 300);
   const alturaCapa = larguraCapa * 1.5;
@@ -68,10 +215,75 @@ export default function DetalhesSerieScreen({ navigation, route }) {
   const [trailersPorTemporada, setTrailersPorTemporada] = useState({});
   const [trailersCarregando, setTrailersCarregando] = useState({});
 
+  // ======================================
+  // ESTADOS DAS AVALIAÇÕES
+  // ======================================
+
+  const [serieInternaId, setSerieInternaId] = useState(null);
+  const [avaliacoes, setAvaliacoes] = useState([]);
+
+  const [estatisticas, setEstatisticas] = useState({
+    media: 0,
+    total_avaliacoes: 0,
+  });
+
+  const [carregandoAvaliacoes, setCarregandoAvaliacoes] =
+    useState(false);
+
+  const [erroAvaliacoes, setErroAvaliacoes] = useState("");
+
+  const [notaSelecionada, setNotaSelecionada] = useState(5);
+  const [comentario, setComentario] = useState("");
+
+  const [avaliacaoEditando, setAvaliacaoEditando] = useState(null);
+  const [enviandoAvaliacao, setEnviandoAvaliacao] = useState(false);
+  const [excluindoAvaliacao, setExcluindoAvaliacao] = useState(null);
+
   const id = route.params?.id;
   const origem = route.params?.origem || "mysql";
 
+  // ======================================
+  // CARREGAR AVALIAÇÕES
+  // ======================================
+
+  const carregarAvaliacoes = async (idInterno) => {
+    if (!idInterno) return;
+
+    try {
+      setCarregandoAvaliacoes(true);
+      setErroAvaliacoes("");
+
+      const dados = await buscarAvaliacoesFilme(idInterno);
+
+      const lista = Array.isArray(dados?.avaliacoes)
+        ? dados.avaliacoes
+        : [];
+
+      setAvaliacoes(lista);
+
+      setEstatisticas({
+        media: Number(dados?.estatisticas?.media || 0),
+        total_avaliacoes: Number(
+          dados?.estatisticas?.total_avaliacoes || 0
+        ),
+      });
+
+      return lista;
+    } catch (error) {
+      console.error("Erro ao carregar avaliações da série:", error);
+
+      setErroAvaliacoes(
+        error.message || "Erro ao carregar avaliações."
+      );
+    } finally {
+      setCarregandoAvaliacoes(false);
+    }
+  };
+
+  // ======================================
   // CARREGAR TRAILER GERAL
+  // ======================================
+
   const carregarTrailerSerie = async (serieId) => {
     try {
       setCarregandoTrailerSerie(true);
@@ -87,13 +299,24 @@ export default function DetalhesSerieScreen({ navigation, route }) {
     }
   };
 
+  // ======================================
   // CARREGAR DETALHES DA SÉRIE
+  // ======================================
+
   const carregarSerie = async () => {
     try {
       setCarregando(true);
       setErro("");
 
       setSerie(null);
+      setSerieInternaId(null);
+      setAvaliacoes([]);
+
+      setEstatisticas({
+        media: 0,
+        total_avaliacoes: 0,
+      });
+
       setTrailerSerie(null);
       setCarregandoTrailerSerie(false);
 
@@ -105,25 +328,51 @@ export default function DetalhesSerieScreen({ navigation, route }) {
       setTrailersPorTemporada({});
       setTrailersCarregando({});
 
+      setNotaSelecionada(5);
+      setComentario("");
+      setAvaliacaoEditando(null);
+
       if (!id) {
         throw new Error("ID da série não informado.");
       }
 
       let dados;
+      let idInterno;
 
       if (origem === "tmdb") {
         dados = await buscarDetalhesSerieTMDB(id);
+
+        // Sincroniza a série com o MySQL
+        const resultado = await sincronizarSerieTMDB(id);
+
+        idInterno =
+          resultado?.conteudo?.id ??
+          resultado?.id ??
+          null;
+
+        carregarTrailerSerie(id);
       } else {
         dados = await buscarSeriePorId(id);
+
+        idInterno = dados?.id;
       }
 
       setSerie(dados);
 
-      if (origem === "tmdb") {
-        carregarTrailerSerie(id);
+      if (idInterno) {
+        const idNumerico = Number(idInterno);
+
+        setSerieInternaId(idNumerico);
+
+        await carregarAvaliacoes(idNumerico);
+      } else {
+        setErroAvaliacoes(
+          "Não foi possível identificar o registro da série no banco de dados."
+        );
       }
     } catch (error) {
       console.error("Erro ao carregar detalhes da série:", error);
+
       setErro("Não foi possível carregar os detalhes da série.");
     } finally {
       setCarregando(false);
@@ -134,7 +383,162 @@ export default function DetalhesSerieScreen({ navigation, route }) {
     carregarSerie();
   }, [id, origem]);
 
+  // ======================================
+  // CADASTRAR OU EDITAR AVALIAÇÃO
+  // ======================================
+
+  const salvarAvaliacao = async () => {
+    if (!usuario || !token) {
+      Alert.alert(
+        "Login necessário",
+        "Entre na sua conta para avaliar esta série."
+      );
+      return;
+    }
+
+    if (!serieInternaId) {
+      Alert.alert(
+        "Erro",
+        "Não foi possível identificar esta série no banco de dados."
+      );
+      return;
+    }
+
+    if (notaSelecionada < 1 || notaSelecionada > 5) {
+      Alert.alert(
+        "Nota inválida",
+        "Selecione uma nota entre 1 e 5 estrelas."
+      );
+      return;
+    }
+
+    try {
+      setEnviandoAvaliacao(true);
+
+      if (avaliacaoEditando) {
+        await editarAvaliacao(
+          avaliacaoEditando.id,
+          notaSelecionada,
+          comentario.trim(),
+          token
+        );
+
+        Alert.alert(
+          "Avaliação atualizada",
+          "Sua avaliação foi atualizada com sucesso."
+        );
+      } else {
+        await cadastrarAvaliacao(
+          serieInternaId,
+          notaSelecionada,
+          comentario.trim(),
+          token
+        );
+
+        Alert.alert(
+          "Avaliação enviada",
+          "Sua avaliação foi cadastrada com sucesso."
+        );
+      }
+
+      setNotaSelecionada(5);
+      setComentario("");
+      setAvaliacaoEditando(null);
+
+      await carregarAvaliacoes(serieInternaId);
+    } catch (error) {
+      console.error("Erro ao salvar avaliação:", error);
+
+      Alert.alert(
+        "Erro",
+        error.message || "Não foi possível salvar sua avaliação."
+      );
+    } finally {
+      setEnviandoAvaliacao(false);
+    }
+  };
+
+  // ======================================
+  // INICIAR EDIÇÃO
+  // ======================================
+
+  const iniciarEdicaoAvaliacao = (avaliacao) => {
+    setAvaliacaoEditando(avaliacao);
+
+    setNotaSelecionada(Number(avaliacao.nota));
+
+    setComentario(avaliacao.comentario || "");
+  };
+
+  // ======================================
+  // CANCELAR EDIÇÃO
+  // ======================================
+
+  const cancelarEdicaoAvaliacao = () => {
+    setAvaliacaoEditando(null);
+    setNotaSelecionada(5);
+    setComentario("");
+  };
+
+  // ======================================
+  // EXCLUIR AVALIAÇÃO
+  // ======================================
+
+  const removerAvaliacao = async (avaliacaoId) => {
+    if (!token) {
+      Alert.alert("Erro", "Você precisa estar conectado.");
+      return;
+    }
+
+    try {
+      setExcluindoAvaliacao(avaliacaoId);
+
+      await excluirAvaliacao(avaliacaoId, token);
+
+      if (avaliacaoEditando?.id === avaliacaoId) {
+        cancelarEdicaoAvaliacao();
+      }
+
+      await carregarAvaliacoes(serieInternaId);
+
+      Alert.alert(
+        "Avaliação excluída",
+        "Sua avaliação foi removida com sucesso."
+      );
+    } catch (error) {
+      console.error("Erro ao excluir avaliação:", error);
+
+      Alert.alert(
+        "Erro",
+        error.message || "Não foi possível excluir a avaliação."
+      );
+    } finally {
+      setExcluindoAvaliacao(null);
+    }
+  };
+
+  const confirmarExclusaoAvaliacao = (avaliacao) => {
+    Alert.alert(
+      "Excluir avaliação",
+      "Tem certeza de que deseja excluir sua avaliação?",
+      [
+        {
+          text: "Cancelar",
+          style: "cancel",
+        },
+        {
+          text: "Excluir",
+          style: "destructive",
+          onPress: () => removerAvaliacao(avaliacao.id),
+        },
+      ]
+    );
+  };
+
+  // ======================================
   // CARREGAR TRAILER DA TEMPORADA
+  // ======================================
+
   const carregarTrailerTemporada = async (numero) => {
     try {
       setTrailersCarregando((anterior) => ({
@@ -166,7 +570,10 @@ export default function DetalhesSerieScreen({ navigation, route }) {
     }
   };
 
+  // ======================================
   // CARREGAR EPISÓDIOS
+  // ======================================
+
   const carregarEpisodiosTemporada = async (numero) => {
     try {
       setTemporadasCarregando((anterior) => ({
@@ -203,7 +610,10 @@ export default function DetalhesSerieScreen({ navigation, route }) {
     }
   };
 
+  // ======================================
   // ABRIR OU FECHAR TEMPORADA
+  // ======================================
+
   const alternarTemporada = async (temporada) => {
     const numero = temporada.numero;
 
@@ -235,7 +645,10 @@ export default function DetalhesSerieScreen({ navigation, route }) {
     }
   };
 
+  // ======================================
   // ABRIR PLATAFORMA
+  // ======================================
+
   const abrirPlataforma = async (link) => {
     if (!link) return;
 
@@ -245,6 +658,26 @@ export default function DetalhesSerieScreen({ navigation, route }) {
       console.error("Erro ao abrir plataforma:", error);
     }
   };
+
+  // ======================================
+  // DATA DA AVALIAÇÃO
+  // ======================================
+
+  const formatarData = (data) => {
+    if (!data) return "";
+
+    const dataFormatada = new Date(data);
+
+    if (Number.isNaN(dataFormatada.getTime())) {
+      return "";
+    }
+
+    return dataFormatada.toLocaleDateString("pt-BR");
+  };
+
+  // ======================================
+  // TELA
+  // ======================================
 
   return (
     <View style={styles.container}>
@@ -371,6 +804,11 @@ export default function DetalhesSerieScreen({ navigation, route }) {
               </View>
             )}
 
+            {/* GOOGLE CAST */}
+            {Platform.OS !== "web" && !estaNoExpoGo && (
+              <ControlesCast />
+            )}
+
             {/* TEMPORADAS E EPISÓDIOS */}
             {origem === "tmdb" && (
               <>
@@ -401,7 +839,6 @@ export default function DetalhesSerieScreen({ navigation, route }) {
                             aberta && styles.blocoTemporadaAberta,
                           ]}
                         >
-                          {/* CABEÇALHO DA TEMPORADA */}
                           <TouchableOpacity
                             style={styles.cardTemporada}
                             onPress={() => alternarTemporada(temporada)}
@@ -431,10 +868,8 @@ export default function DetalhesSerieScreen({ navigation, route }) {
                             </View>
                           </TouchableOpacity>
 
-                          {/* CONTEÚDO EXPANDIDO */}
                           {aberta && (
                             <View style={styles.listaEpisodios}>
-                              {/* TRAILER DA TEMPORADA */}
                               <View style={styles.trailerTemporada}>
                                 <Text style={styles.tituloTrailerTemporada}>
                                   Trailer da temporada
@@ -481,7 +916,6 @@ export default function DetalhesSerieScreen({ navigation, route }) {
                                 ) : null}
                               </View>
 
-                              {/* EPISÓDIOS */}
                               <Text style={styles.subtituloEpisodios}>
                                 Episódios
                               </Text>
@@ -516,7 +950,6 @@ export default function DetalhesSerieScreen({ navigation, route }) {
                                     }
                                     style={styles.cardEpisodio}
                                   >
-                                    {/* IMAGEM HORIZONTAL 16:9 */}
                                     {episodio.imagem ? (
                                       <Image
                                         source={{ uri: episodio.imagem }}
@@ -536,7 +969,6 @@ export default function DetalhesSerieScreen({ navigation, route }) {
                                       </View>
                                     )}
 
-                                    {/* INFORMAÇÕES */}
                                     <View style={styles.infoEpisodio}>
                                       <Text style={styles.numeroEpisodio}>
                                         EPISÓDIO {episodio.numero}
@@ -606,6 +1038,266 @@ export default function DetalhesSerieScreen({ navigation, route }) {
                 Nenhuma plataforma cadastrada.
               </Text>
             )}
+
+            {/* ================================== */}
+            {/* AVALIAÇÕES DA SÉRIE */}
+            {/* ================================== */}
+
+            <View style={styles.secaoAvaliacoes}>
+              <Text style={styles.tituloSecao}>
+                Avaliações da série
+              </Text>
+
+              {carregandoAvaliacoes ? (
+                <ActivityIndicator
+                  size="large"
+                  color="#E50914"
+                  style={styles.carregandoAvaliacoes}
+                />
+              ) : erroAvaliacoes ? (
+                <View>
+                  <Text style={styles.mensagem}>
+                    {erroAvaliacoes}
+                  </Text>
+
+                  <TouchableOpacity
+                    onPress={() => carregarAvaliacoes(serieInternaId)}
+                  >
+                    <Text style={styles.textoTentarEpisodios}>
+                      Tentar novamente
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <>
+                  {/* MÉDIA */}
+                  <View style={styles.resumoAvaliacoes}>
+                    <Text style={styles.mediaAvaliacoes}>
+                      {Number(estatisticas.media || 0).toFixed(1)}
+                    </Text>
+
+                    <Text style={styles.estrelasResumo}>
+                      {"★".repeat(
+                        Math.round(Number(estatisticas.media || 0))
+                      )}
+                    </Text>
+
+                    <Text style={styles.quantidadeAvaliacoes}>
+                      {estatisticas.total_avaliacoes}{" "}
+                      {estatisticas.total_avaliacoes === 1
+                        ? "avaliação"
+                        : "avaliações"}
+                    </Text>
+                  </View>
+
+                  {/* FORMULÁRIO */}
+                  <View style={styles.formularioAvaliacao}>
+                    <Text style={styles.tituloFormulario}>
+                      {avaliacaoEditando
+                        ? "Editar minha avaliação"
+                        : "Avalie esta série"}
+                    </Text>
+
+                    {!usuario || !token ? (
+                      <Text style={styles.avisoLogin}>
+                        Entre na sua conta para deixar uma avaliação.
+                      </Text>
+                    ) : (
+                      <>
+                        <Text style={styles.rotuloNota}>
+                          Selecione sua nota
+                        </Text>
+
+                        <View style={styles.seletorEstrelas}>
+                          {[1, 2, 3, 4, 5].map((nota) => (
+                            <TouchableOpacity
+                              key={nota}
+                              onPress={() => setNotaSelecionada(nota)}
+                              activeOpacity={0.7}
+                            >
+                              <Text
+                                style={[
+                                  styles.estrelaSelecionavel,
+                                  nota <= notaSelecionada &&
+                                    styles.estrelaSelecionada,
+                                ]}
+                              >
+                                ★
+                              </Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+
+                        <TextInput
+                          style={styles.campoComentario}
+                          placeholder="Escreva um comentário sobre a série (opcional)..."
+                          placeholderTextColor="#777777"
+                          multiline
+                          value={comentario}
+                          onChangeText={setComentario}
+                          textAlignVertical="top"
+                        />
+
+                        <TouchableOpacity
+                          style={[
+                            styles.botaoPublicar,
+                            enviandoAvaliacao && styles.botaoDesabilitado,
+                          ]}
+                          onPress={salvarAvaliacao}
+                          disabled={enviandoAvaliacao}
+                        >
+                          {enviandoAvaliacao ? (
+                            <ActivityIndicator color="#FFFFFF" />
+                          ) : (
+                            <Text style={styles.textoBotaoPublicar}>
+                              {avaliacaoEditando
+                                ? "Salvar alterações"
+                                : "Publicar avaliação"}
+                            </Text>
+                          )}
+                        </TouchableOpacity>
+
+                        {avaliacaoEditando && (
+                          <TouchableOpacity
+                            style={styles.botaoCancelarEdicao}
+                            onPress={cancelarEdicaoAvaliacao}
+                          >
+                            <Text style={styles.textoCancelarEdicao}>
+                              Cancelar edição
+                            </Text>
+                          </TouchableOpacity>
+                        )}
+                      </>
+                    )}
+                  </View>
+
+                  {/* LISTA DE AVALIAÇÕES */}
+                  <Text style={styles.tituloListaAvaliacoes}>
+                    Comentários dos usuários
+                  </Text>
+
+                  {avaliacoes.length > 0 ? (
+                    avaliacoes.map((avaliacao) => {
+                      const minhaAvaliacao =
+                        Number(avaliacao.usuario_id) ===
+                        Number(usuario?.id);
+
+                      return (
+                        <View
+                          key={avaliacao.id}
+                          style={styles.cardAvaliacao}
+                        >
+                          <View style={styles.cabecalhoAvaliacao}>
+                            <View style={styles.avatarAvaliacao}>
+                              <Text style={styles.letraAvatar}>
+                                {(avaliacao.usuario_nome ||
+                                  avaliacao.nome_usuario ||
+                                  "U")
+                                  .charAt(0)
+                                  .toUpperCase()}
+                              </Text>
+                            </View>
+
+                            <View style={styles.dadosUsuario}>
+                              <Text style={styles.nomeUsuarioAvaliacao}>
+                                {avaliacao.usuario_nome ||
+                                  avaliacao.nome_usuario ||
+                                  "Usuário"}
+                              </Text>
+
+                              <Text style={styles.dataAvaliacao}>
+                                {formatarData(
+                                  avaliacao.criado_em ||
+                                  avaliacao.data_criacao ||
+                                  avaliacao.created_at
+                                )}
+                              </Text>
+                            </View>
+
+                            {minhaAvaliacao && (
+                              <View style={styles.seloMinhaAvaliacao}>
+                                <Text style={styles.textoSelo}>
+                                  Minha avaliação
+                                </Text>
+                              </View>
+                            )}
+                          </View>
+
+                          <Text style={styles.notaAvaliacao}>
+                            {"★".repeat(
+                              Math.max(
+                                0,
+                                Math.min(
+                                  5,
+                                  Math.round(Number(avaliacao.nota) || 0)
+                                )
+                              )
+                            )}
+                            <Text style={styles.notaNumerica}>
+                              {" "}
+                              {Number(avaliacao.nota).toFixed(1)}/5
+                            </Text>
+                          </Text>
+
+                          {avaliacao.comentario ? (
+                            <Text style={styles.comentarioAvaliacao}>
+                              {avaliacao.comentario}
+                            </Text>
+                          ) : (
+                            <Text style={styles.semComentario}>
+                              Avaliação sem comentário.
+                            </Text>
+                          )}
+
+                          {minhaAvaliacao && (
+                            <View style={styles.acoesAvaliacao}>
+                              <TouchableOpacity
+                                onPress={() =>
+                                  iniciarEdicaoAvaliacao(avaliacao)
+                                }
+                                style={styles.botaoEditarAvaliacao}
+                              >
+                                <Text style={styles.textoEditarAvaliacao}>
+                                  Editar
+                                </Text>
+                              </TouchableOpacity>
+
+                              <TouchableOpacity
+                                onPress={() =>
+                                  confirmarExclusaoAvaliacao(avaliacao)
+                                }
+                                style={styles.botaoExcluirAvaliacao}
+                                disabled={
+                                  excluindoAvaliacao === avaliacao.id
+                                }
+                              >
+                                {excluindoAvaliacao === avaliacao.id ? (
+                                  <ActivityIndicator color="#E50914" />
+                                ) : (
+                                  <Text style={styles.textoExcluirAvaliacao}>
+                                    Excluir
+                                  </Text>
+                                )}
+                              </TouchableOpacity>
+                            </View>
+                          )}
+                        </View>
+                      );
+                    })
+                  ) : (
+                    <View style={styles.semAvaliacoes}>
+                      <Text style={styles.textoSemAvaliacoes}>
+                        Esta série ainda não possui avaliações.
+                      </Text>
+
+                      <Text style={styles.subtextoSemAvaliacoes}>
+                        Seja o primeiro a compartilhar sua opinião!
+                      </Text>
+                    </View>
+                  )}
+                </>
+              )}
+            </View>
           </>
         ) : null}
 
@@ -615,7 +1307,10 @@ export default function DetalhesSerieScreen({ navigation, route }) {
   );
 }
 
+// ======================================
 // ESTILOS
+// ======================================
+
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -637,7 +1332,6 @@ const styles = StyleSheet.create({
     fontSize: 17,
   },
 
-  // CAPA
   areaCapa: {
     alignSelf: "center",
     backgroundColor: "#151515",
@@ -707,7 +1401,6 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
 
-  // TRAILERS
   secaoTrailer: {
     marginTop: 5,
   },
@@ -768,7 +1461,6 @@ const styles = StyleSheet.create({
     marginTop: 12,
   },
 
-  // TEMPORADAS
   blocoTemporada: {
     marginHorizontal: 20,
     marginTop: 12,
@@ -848,7 +1540,6 @@ const styles = StyleSheet.create({
     borderTopColor: "#303036",
   },
 
-  // TÍTULO DA LISTA DE EPISÓDIOS
   subtituloEpisodios: {
     color: "#FFFFFF",
     fontSize: 16,
@@ -857,7 +1548,6 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
 
-  // EPISÓDIOS
   cardEpisodio: {
     marginTop: 14,
     backgroundColor: "#202027",
@@ -934,7 +1624,6 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
   },
 
-  // PLATAFORMAS
   cardPlataforma: {
     flexDirection: "row",
     justifyContent: "space-between",
@@ -959,7 +1648,8 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
   },
 
-  // ESTADOS
+  // ESTADOS GERAIS
+
   carregando: {
     marginTop: 70,
   },
@@ -993,5 +1683,329 @@ const styles = StyleSheet.create({
     fontSize: 12,
     textAlign: "center",
     marginTop: 45,
+  },
+
+  // ======================================
+  // ESTILOS DAS AVALIAÇÕES
+  // ======================================
+
+  secaoAvaliacoes: {
+    marginTop: 10,
+    paddingBottom: 20,
+  },
+
+  carregandoAvaliacoes: {
+    marginVertical: 25,
+  },
+
+  resumoAvaliacoes: {
+    marginHorizontal: 20,
+    backgroundColor: "#19191F",
+    borderRadius: 12,
+    padding: 18,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#303036",
+  },
+
+  mediaAvaliacoes: {
+    color: "#FFFFFF",
+    fontSize: 36,
+    fontWeight: "900",
+  },
+
+  estrelasResumo: {
+    color: "#F5C518",
+    fontSize: 23,
+    marginTop: 3,
+  },
+
+  quantidadeAvaliacoes: {
+    color: "#AAAAAA",
+    fontSize: 12,
+    marginTop: 5,
+  },
+
+  formularioAvaliacao: {
+    marginHorizontal: 20,
+    marginTop: 18,
+    padding: 16,
+    backgroundColor: "#19191F",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#303036",
+  },
+
+  tituloFormulario: {
+    color: "#FFFFFF",
+    fontSize: 17,
+    fontWeight: "bold",
+    marginBottom: 15,
+  },
+
+  avisoLogin: {
+    color: "#AAAAAA",
+    fontSize: 13,
+    lineHeight: 20,
+  },
+
+  rotuloNota: {
+    color: "#BBBBBB",
+    fontSize: 13,
+    marginBottom: 8,
+  },
+
+  seletorEstrelas: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginBottom: 15,
+  },
+
+  estrelaSelecionavel: {
+    color: "#555555",
+    fontSize: 34,
+    marginRight: 7,
+  },
+
+  estrelaSelecionada: {
+    color: "#F5C518",
+  },
+
+  campoComentario: {
+    minHeight: 100,
+    backgroundColor: "#101014",
+    borderWidth: 1,
+    borderColor: "#38383F",
+    borderRadius: 9,
+    padding: 12,
+    color: "#FFFFFF",
+    fontSize: 14,
+  },
+
+  botaoPublicar: {
+    backgroundColor: "#E50914",
+    padding: 14,
+    borderRadius: 9,
+    alignItems: "center",
+    marginTop: 14,
+  },
+
+  botaoDesabilitado: {
+    opacity: 0.6,
+  },
+
+  textoBotaoPublicar: {
+    color: "#FFFFFF",
+    fontWeight: "bold",
+    fontSize: 14,
+  },
+
+  botaoCancelarEdicao: {
+    alignItems: "center",
+    padding: 12,
+    marginTop: 5,
+  },
+
+  textoCancelarEdicao: {
+    color: "#AAAAAA",
+    fontSize: 13,
+  },
+
+  tituloListaAvaliacoes: {
+    color: "#FFFFFF",
+    fontSize: 17,
+    fontWeight: "bold",
+    marginHorizontal: 20,
+    marginTop: 25,
+    marginBottom: 12,
+  },
+
+  cardAvaliacao: {
+    marginHorizontal: 20,
+    marginBottom: 12,
+    padding: 15,
+    backgroundColor: "#19191F",
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#303036",
+  },
+
+  cabecalhoAvaliacao: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+
+  avatarAvaliacao: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: "#3A2023",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+
+  letraAvatar: {
+    color: "#FFFFFF",
+    fontSize: 16,
+    fontWeight: "bold",
+  },
+
+  dadosUsuario: {
+    flex: 1,
+    marginLeft: 10,
+  },
+
+  nomeUsuarioAvaliacao: {
+    color: "#FFFFFF",
+    fontSize: 13,
+    fontWeight: "bold",
+  },
+
+  dataAvaliacao: {
+    color: "#888888",
+    fontSize: 11,
+    marginTop: 3,
+  },
+
+  seloMinhaAvaliacao: {
+    backgroundColor: "#382024",
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderRadius: 6,
+  },
+
+  textoSelo: {
+    color: "#FF7B83",
+    fontSize: 9,
+    fontWeight: "bold",
+  },
+
+  notaAvaliacao: {
+    color: "#F5C518",
+    fontSize: 19,
+    marginTop: 12,
+  },
+
+  notaNumerica: {
+    color: "#AAAAAA",
+    fontSize: 12,
+  },
+
+  comentarioAvaliacao: {
+    color: "#DDDDDD",
+    fontSize: 13,
+    lineHeight: 21,
+    marginTop: 10,
+  },
+
+  semComentario: {
+    color: "#777777",
+    fontSize: 12,
+    fontStyle: "italic",
+    marginTop: 10,
+  },
+
+  acoesAvaliacao: {
+    flexDirection: "row",
+    borderTopWidth: 1,
+    borderTopColor: "#303036",
+    marginTop: 14,
+    paddingTop: 10,
+  },
+
+  botaoEditarAvaliacao: {
+    marginRight: 22,
+    paddingVertical: 5,
+  },
+
+  textoEditarAvaliacao: {
+    color: "#5EA8FF",
+    fontSize: 12,
+    fontWeight: "bold",
+  },
+
+  botaoExcluirAvaliacao: {
+    paddingVertical: 5,
+  },
+
+  textoExcluirAvaliacao: {
+    color: "#E50914",
+    fontSize: 12,
+    fontWeight: "bold",
+  },
+
+  semAvaliacoes: {
+    marginHorizontal: 20,
+    backgroundColor: "#19191F",
+    padding: 20,
+    borderRadius: 10,
+    alignItems: "center",
+  },
+
+  textoSemAvaliacoes: {
+    color: "#AAAAAA",
+    fontSize: 13,
+    textAlign: "center",
+  },
+
+  subtextoSemAvaliacoes: {
+    color: "#E50914",
+    fontSize: 12,
+    marginTop: 7,
+    textAlign: "center",
+  },
+
+  // ======================================
+  // ESTILOS DO GOOGLE CAST
+  // ======================================
+
+  areaCast: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#19191F",
+    marginHorizontal: 20,
+    marginTop: 20,
+    padding: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: "#303036",
+  },
+
+  textosCast: {
+    flex: 1,
+    paddingRight: 12,
+  },
+
+  textoCast: {
+    color: "#FFFFFF",
+    fontSize: 16,
+    fontWeight: "bold",
+  },
+
+  subtextoCast: {
+    color: "#AAAAAA",
+    fontSize: 12,
+    marginTop: 5,
+  },
+
+  botaoCast: {
+    width: 48,
+    height: 48,
+  },
+
+  botaoTesteCast: {
+    alignSelf: "flex-start",
+    backgroundColor: "#E50914",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 8,
+    marginTop: 12,
+  },
+
+  textoTesteCast: {
+    color: "#FFFFFF",
+    fontWeight: "bold",
+    fontSize: 12,
   },
 });

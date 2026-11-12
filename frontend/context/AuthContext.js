@@ -1,4 +1,3 @@
-
 import React, {
   createContext,
   useContext,
@@ -42,10 +41,12 @@ export function AuthProvider({ children }) {
     restaurarSessao();
   }, []);
 
-  // Salvar usuário e token
+  // Salvar usuário e token após o login
   async function salvarSessao(resposta) {
     if (!resposta.token || !resposta.usuario) {
-      throw new Error("O servidor não retornou os dados de autenticação.");
+      throw new Error(
+        "O servidor não retornou os dados de autenticação."
+      );
     }
 
     const sessao = {
@@ -70,22 +71,26 @@ export function AuthProvider({ children }) {
     });
 
     await salvarSessao(resposta);
+
     return resposta.usuario;
   }
 
-  // Criar conta
+  // Criar conta sem iniciar uma sessão automaticamente
   async function cadastrar(nome, email, senha) {
     const resposta = await api("/auth/cadastro", {
       method: "POST",
       body: JSON.stringify({ nome, email, senha }),
     });
 
-    await salvarSessao(resposta);
     return resposta.usuario;
   }
 
   // Atualizar dados do usuário em memória e no armazenamento
   async function atualizarUsuario(novosDados) {
+    if (!usuario || !token) {
+      throw new Error("Nenhum usuário autenticado.");
+    }
+
     const usuarioAtualizado = {
       ...usuario,
       ...novosDados,
@@ -133,7 +138,9 @@ export function useAuth() {
   const contexto = useContext(AuthContext);
 
   if (!contexto) {
-    throw new Error("useAuth precisa estar dentro de AuthProvider");
+    throw new Error(
+      "useAuth precisa estar dentro de AuthProvider"
+    );
   }
 
   return contexto;

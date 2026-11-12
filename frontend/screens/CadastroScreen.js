@@ -24,10 +24,9 @@ export default function CadastroScreen({ navigation }) {
   const [senha, setSenha] = useState("");
   const [confirmarSenha, setConfirmarSenha] = useState("");
   const [carregando, setCarregando] = useState(false);
+  const [cadastroConcluido, setCadastroConcluido] = useState(false);
 
   async function criarConta() {
-    console.log("BOTÃO DE CADASTRO FOI ACIONADO");
-
     const nomeLimpo = nome.trim();
     const emailLimpo = email.trim().toLowerCase();
 
@@ -54,18 +53,9 @@ export default function CadastroScreen({ navigation }) {
     try {
       setCarregando(true);
 
-      console.log("Enviando cadastro para o backend...");
+      await cadastrar(nomeLimpo, emailLimpo, senha);
 
-      const usuario = await cadastrar(nomeLimpo, emailLimpo, senha);
-
-      console.log("Cadastro realizado com sucesso:", usuario);
-
-      Alert.alert("Sucesso", "Sua conta foi criada!", [
-        {
-          text: "Continuar",
-          onPress: () => navigation.replace("Home"),
-        },
-      ]);
+      setCadastroConcluido(true);
     } catch (erro) {
       console.log("ERRO NO CADASTRO:", erro);
 
@@ -76,6 +66,10 @@ export default function CadastroScreen({ navigation }) {
     } finally {
       setCarregando(false);
     }
+  }
+
+  function irParaLogin() {
+    navigation.replace("Login");
   }
 
   return (
@@ -93,84 +87,123 @@ export default function CadastroScreen({ navigation }) {
           <View style={styles.logoIcon}>
             <Text style={styles.playIcon}>▶</Text>
           </View>
+
           <Text style={styles.logoText}>CINEVERSE</Text>
         </View>
 
         <View style={styles.card}>
-          <Text style={styles.eyebrow}>🔴 SEU UNIVERSO COMEÇA AQUI</Text>
+          {cadastroConcluido ? (
+            <View style={styles.sucessoContainer}>
+              <Text style={styles.sucessoIcone}>✓</Text>
 
-          <Text style={styles.title}>Criar conta</Text>
+              <Text style={styles.sucessoTitulo}>
+                Conta criada com sucesso!
+              </Text>
 
-          <Text style={styles.subtitle}>
-            Cadastre-se para aproveitar filmes e séries.
-          </Text>
+              <Text style={styles.sucessoTexto}>
+                Seu cadastro foi realizado. Agora você já pode entrar
+                no CineVerse com seu e-mail e senha.
+              </Text>
 
-          <Text style={styles.label}>Nome completo</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Digite seu nome"
-            placeholderTextColor="#888"
-            autoCapitalize="words"
-            value={nome}
-            onChangeText={setNome}
-            editable={!carregando}
-          />
+              <TouchableOpacity
+                style={styles.button}
+                onPress={irParaLogin}
+              >
+                <Text style={styles.buttonText}>
+                  Ir para o Login
+                </Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <>
+              <Text style={styles.eyebrow}>
+                🔴 SEU UNIVERSO COMEÇA AQUI
+              </Text>
 
-          <Text style={styles.label}>E-mail</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="seu@email.com"
-            placeholderTextColor="#888"
-            keyboardType="email-address"
-            autoCapitalize="none"
-            autoCorrect={false}
-            value={email}
-            onChangeText={setEmail}
-            editable={!carregando}
-          />
+              <Text style={styles.title}>Criar conta</Text>
 
-          <Text style={styles.label}>Senha</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Mínimo de 8 caracteres"
-            placeholderTextColor="#888"
-            secureTextEntry
-            value={senha}
-            onChangeText={setSenha}
-            editable={!carregando}
-          />
+              <Text style={styles.subtitle}>
+                Cadastre-se para aproveitar filmes e séries.
+              </Text>
 
-          <Text style={styles.label}>Confirmar senha</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="Digite novamente sua senha"
-            placeholderTextColor="#888"
-            secureTextEntry
-            value={confirmarSenha}
-            onChangeText={setConfirmarSenha}
-            editable={!carregando}
-          />
+              <Text style={styles.label}>Nome completo</Text>
 
-          <TouchableOpacity
-            style={[styles.button, carregando && styles.buttonDisabled]}
-            onPress={criarConta}
-            disabled={carregando}
-          >
-            {carregando ? (
-              <ActivityIndicator color="#FFFFFF" />
-            ) : (
-              <Text style={styles.buttonText}>Criar minha conta</Text>
-            )}
-          </TouchableOpacity>
+              <TextInput
+                style={styles.input}
+                placeholder="Digite seu nome"
+                placeholderTextColor="#888"
+                autoCapitalize="words"
+                value={nome}
+                onChangeText={setNome}
+                editable={!carregando}
+              />
 
-          <TouchableOpacity
-            onPress={() => navigation.goBack()}
-            disabled={carregando}
-          >
-            <Text style={styles.voltar}>
-              Já tem uma conta? <Text style={styles.destaque}>Entrar</Text>
-            </Text>
-          </TouchableOpacity>
+              <Text style={styles.label}>E-mail</Text>
+
+              <TextInput
+                style={styles.input}
+                placeholder="seu@email.com"
+                placeholderTextColor="#888"
+                keyboardType="email-address"
+                autoCapitalize="none"
+                autoCorrect={false}
+                value={email}
+                onChangeText={setEmail}
+                editable={!carregando}
+              />
+
+              <Text style={styles.label}>Senha</Text>
+
+              <TextInput
+                style={styles.input}
+                placeholder="Mínimo de 8 caracteres"
+                placeholderTextColor="#888"
+                secureTextEntry
+                value={senha}
+                onChangeText={setSenha}
+                editable={!carregando}
+              />
+
+              <Text style={styles.label}>Confirmar senha</Text>
+
+              <TextInput
+                style={styles.input}
+                placeholder="Digite novamente sua senha"
+                placeholderTextColor="#888"
+                secureTextEntry
+                value={confirmarSenha}
+                onChangeText={setConfirmarSenha}
+                editable={!carregando}
+              />
+
+              <TouchableOpacity
+                style={[
+                  styles.button,
+                  carregando && styles.buttonDisabled,
+                ]}
+                onPress={criarConta}
+                disabled={carregando}
+              >
+                {carregando ? (
+                  <ActivityIndicator color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.buttonText}>
+                    Criar minha conta
+                  </Text>
+                )}
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={() => navigation.goBack()}
+                disabled={carregando}
+              >
+                <Text style={styles.voltar}>
+                  Já tem uma conta?{" "}
+                  <Text style={styles.destaque}>Entrar</Text>
+                </Text>
+              </TouchableOpacity>
+            </>
+          )}
         </View>
       </ScrollView>
     </KeyboardAvoidingView>
@@ -281,5 +314,36 @@ const styles = StyleSheet.create({
   destaque: {
     color: "#E50914",
     fontWeight: "bold",
+  },
+  sucessoContainer: {
+    alignItems: "center",
+    paddingVertical: 15,
+  },
+  sucessoIcone: {
+    color: "#FFFFFF",
+    backgroundColor: "#168A45",
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    textAlign: "center",
+    textAlignVertical: "center",
+    fontSize: 38,
+    fontWeight: "bold",
+    overflow: "hidden",
+    marginBottom: 22,
+  },
+  sucessoTitulo: {
+    color: "#FFFFFF",
+    fontSize: 23,
+    fontWeight: "bold",
+    textAlign: "center",
+    marginBottom: 14,
+  },
+  sucessoTexto: {
+    color: "#A1A1A1",
+    fontSize: 14,
+    lineHeight: 22,
+    textAlign: "center",
+    marginBottom: 25,
   },
 });
